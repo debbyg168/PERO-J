@@ -126,6 +126,32 @@ const migrations = [
       ALTER TABLE events ADD COLUMN IF NOT EXISTS sac_asset TEXT;
     `,
   },
+  {
+    id: 7,
+    name: "create_markets_and_bets",
+    sql: `
+      CREATE TABLE IF NOT EXISTS markets (
+        market_id  BIGINT PRIMARY KEY,
+        total_yes  NUMERIC NOT NULL DEFAULT 0,
+        total_no   NUMERIC NOT NULL DEFAULT 0,
+        bet_count  BIGINT NOT NULL DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS bets (
+        id           BIGSERIAL PRIMARY KEY,
+        tx_hash      TEXT NOT NULL,
+        event_index  INTEGER NOT NULL,
+        market_id    BIGINT NOT NULL,
+        bettor       TEXT NOT NULL,
+        is_yes       BOOLEAN NOT NULL,
+        gross_amount NUMERIC NOT NULL,
+        net_amount   NUMERIC NOT NULL,
+        placed_at    TIMESTAMPTZ NOT NULL,
+        UNIQUE (tx_hash, event_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_bets_market ON bets(market_id);
+      CREATE INDEX IF NOT EXISTS idx_bets_bettor ON bets(bettor);
+    `,
+  },
 ];
 
 process.on("unhandledRejection", async (err) => {
