@@ -5,6 +5,8 @@ import { eventEmitter } from "./events.js";
 /** @typedef {import('./types.js').ContractMeta} ContractMeta */
 /** @typedef {import('./types.js').VolumeResult} VolumeResult */
 
+const DEFAULT_BACKEND_POOL_SIZE = 25;
+const DEFAULT_INDEXER_POOL_SIZE = 10;
 const DEFAULT_POOL_SIZE = 20;
 const PING_TIMEOUT_MS = 5000;
 
@@ -15,10 +17,18 @@ const PING_TIMEOUT_MS = 5000;
  * @param {string} [envVal=process.env.DATABASE_POOL_SIZE]
  * @returns {number}
  */
-export function getPoolSize(envVal = process.env.DATABASE_POOL_SIZE) {
+export function getPoolSize(
+  envVal = process.env.DATABASE_POOL_SIZE,
+  serviceType = process.env.SERVICE_TYPE
+) {
   if (envVal === undefined || envVal === null || String(envVal).trim() === "") {
+    if (serviceType === "backend") return DEFAULT_BACKEND_POOL_SIZE;
+    if (serviceType === "indexer") return DEFAULT_INDEXER_POOL_SIZE;
     return DEFAULT_POOL_SIZE;
   }
+
+
+
   const str = String(envVal).trim();
   const parsed = Number(str);
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
@@ -30,11 +40,16 @@ export function getPoolSize(envVal = process.env.DATABASE_POOL_SIZE) {
   return parsed;
 }
 
-const pool = new pg.Pool({
+export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
   max: getPoolSize(),
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+});
+
+// Error event handler: prevent unexpected idle connection drops from crashing the service
+pool.on("error", (err) => {
+  console.error("Unexpected error on idle database client:", err);
 });
 const MIGRATION_LOCK_ID = 57_056;
 const MAX_PAGE = 200;
@@ -139,6 +154,23 @@ process.on("unhandledRejection", async (err) => {
 });
 
 export const db = {
+  /**
+   * Return current database connection pool health metrics.
+   * @returns {{ totalCount: number, idleCount: number, waitingCount: number, max: number, isHealthy: boolean }}
+   */
+  getPoolMetrics() {
+    const max = getPoolSize();
+    const totalCount = pool.totalCount ?? 0;
+    const idleCount = pool.idleCount ?? 0;
+    const waitingCount = pool.waitingCount ?? 0;
+    return {
+      totalCount,
+      idleCount,
+      waitingCount,
+      max,
+      isHealthy: !(waitingCount > 0 && totalCount >= max),
+    };
+  },
   /** Run advisory-locked schema migrations before startup.
    *
    * IMPORTANT: This method acquires a dedicated client from the pool.
