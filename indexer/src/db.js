@@ -126,6 +126,33 @@ const migrations = [
       ALTER TABLE events ADD COLUMN IF NOT EXISTS sac_asset TEXT;
     `,
   },
+  {
+    id: 7,
+    name: "create_markets_and_dlq_events",
+    sql: `
+      CREATE TABLE IF NOT EXISTS markets (
+        id          TEXT PRIMARY KEY,
+        category    TEXT NOT NULL,
+        params      JSONB NOT NULL DEFAULT '{}'::jsonb,
+        ends_at     TIMESTAMPTZ NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'open',
+        total_yes   NUMERIC NOT NULL DEFAULT 0,
+        total_no    NUMERIC NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_markets_status_ends_at ON markets(status, ends_at);
+      CREATE TABLE IF NOT EXISTS dlq_events (
+        id            BIGSERIAL PRIMARY KEY,
+        payload       JSONB NOT NULL,
+        error         TEXT,
+        stack         TEXT,
+        retry_count   INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        resolved      BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_dlq_events_pending ON dlq_events(next_retry_at) WHERE NOT resolved;
+    `,
+  },
 ];
 
 process.on("unhandledRejection", async (err) => {
@@ -190,6 +217,15 @@ export const db = {
       }
       client.release();
     }
+  },
+
+  /**
+   * Run an arbitrary parameterised query against the pool.
+   * @param {string} text
+   * @param {any[]} [params]
+   */
+  async query(text, params) {
+    return pool.query(text, params);
   },
 
   /**

@@ -1,0 +1,14 @@
+{
+  "name": "pero-oracle",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/daemon.js"
+  },
+  "dependencies": {
+    "pg": "8.12.0"
+  }
+}

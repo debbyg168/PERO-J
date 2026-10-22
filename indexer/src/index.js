@@ -8,6 +8,8 @@ import { reloadSacMap } from "./sac.js";
 import { validateNetwork } from "./validateNetwork.js";
 import { submitEvent } from "./contract.js";
 import { resolvePollMs } from "./resolvePollMs.js";
+import { startDlqRetryWorker } from "./dlq-worker.js";
+import { startDriftDetector } from "./drift-detector.js";
 
 dotenv.config();
 
@@ -226,6 +228,9 @@ async function run() {
 
   startApi();
 
+  const stopDlqWorker = startDlqRetryWorker(db, (payload) => db.upsertEvent(payload));
+  const stopDriftDetector = startDriftDetector(db);
+
   await validateNetwork(rpc);
 
   const persisted = await db.getCursor();
@@ -254,6 +259,8 @@ async function run() {
     await new Promise((r) => setTimeout(r, POLL_MS));
   }
 
+  stopDlqWorker();
+  stopDriftDetector();
   await db.close();
   process.exit(0);
 }
