@@ -3,6 +3,7 @@ import { scValToNative, StrKey } from "@stellar/stellar-sdk";
 import { db } from "./db.js";
 import { detectSac } from "./sac.js";
 import { scValToJs } from "./scval.js";
+import { incCounter } from "./metrics.js";
 
 /** @typedef {import('./types.js').DecodedEvent} DecodedEvent */
 /** @typedef {import('./types.js').ContractMeta} ContractMeta */
@@ -61,6 +62,21 @@ export async function decode(ev) {
     }
   }
   const fnAbi = meta?.functions?.find((f) => f.name === fnName);
+
+  if (!fnAbi) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "unmapped contract event topic",
+        topic: fnName,
+        contractId,
+        ledger: ev.ledger,
+      }),
+    );
+    incCounter("indexer_unmapped_events_total", "Contract events with no mapped ABI topic", {
+      topic: fnName,
+    });
+  }
 
   const { isSac, assetCode } = detectSac(contractId);
   const contractLabel = isSac

@@ -8,6 +8,7 @@ import { reloadSacMap } from "./sac.js";
 import { validateNetwork } from "./validateNetwork.js";
 import { submitEvent } from "./contract.js";
 import { resolvePollMs } from "./resolvePollMs.js";
+import { publish } from "./redis.js";
 
 dotenv.config();
 
@@ -114,6 +115,13 @@ export async function indexLedger(ledger, rpcClient = rpc) {
       decoded.onchain_seq = onchain_seq;
     }
     await db.upsertEvent(decoded);
+    // Fire-and-forget after commit: Redis failures never block indexing.
+    void publish(`stellar:events:${decoded.function}`, {
+      type: decoded.function,
+      market_id: decoded.contract_id,
+      timestamp: new Date().toISOString(),
+      state: { ledger: decoded.ledger, tx_hash: decoded.tx_hash, description: decoded.description },
+    });
     console.log(`[${ev.ledger}] ${decoded.function}: ${decoded.description}`);
   }
 

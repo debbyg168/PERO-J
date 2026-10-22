@@ -5,6 +5,8 @@ import { db } from "./db.js";
 import { fetchTokenMetadata } from "./sep41Metadata.js";
 import { health } from "./index.js";
 import { eventEmitter } from "./events.js";
+import { renderMetrics } from "./metrics.js";
+import { registerOracleRoutes } from "./oracle.js";
 
 const PORT = process.env.PORT || 3001;
 
@@ -86,6 +88,12 @@ export function createApp() {
   const app = express();
   let distinctFunctionsCache = null;
   app.use(express.json());
+
+  app.get("/metrics", (_req, res) => {
+    res.type("text/plain; version=0.0.4").send(renderMetrics());
+  });
+
+  registerOracleRoutes(app, requireAdminKey, asyncHandler);
 
   // GET /health — liveness + readiness probe for container orchestrators and uptime monitors
   app.get(
