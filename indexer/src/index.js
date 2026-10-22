@@ -88,14 +88,34 @@ export function extractAddresses(values, found = new Set()) {
 }
 
 export async function indexLedger(ledger, rpcClient = rpc) {
-  // getEvents supports cursor-based pagination; we use ledger range here
-  const res = await rpcClient.getEvents({
-    startLedger: ledger,
-    filters: [{ type: "contract" }],
-    limit: 200,
-  });
+  const latestLedger = await rpcClient.getLatestLedger();
+  const events = [];
+  let cursor;
+  while (true) {
+    const res = await rpcClient.getEvents({
+      startLedger: ledger,
+      cursor,
+      filters: [{ type: "contract" }],
+      limit: 200,
+    });
+    if (res.latestLedger !== latestLedger.sequence) {
+      throw new Error(
+        `RPC ledger changed during event fetch (${res.latestLedger} -> ${latestLedger.sequence}); retrying`
+      );
+    }
+    events.push(...res.events);
+    if (res.events.length < 200) {
+      break;
+    }
+    const nextCursor = res.events.at(-1)?.pagingToken;
+    if (!nextCursor || nextCursor === cursor) {
+      throw new Error("RPC event pagination did not advance; retrying");
+    }
+    cursor = nextCursor;
+  }
 
-  for (const ev of res.events) {
+  const decodedEvents = [];
+  for (const ev of events) {
     // On-chain `update` events from the explorer contract let us invalidate
     // the in-memory ABI cache immediately, instead of waiting for the 60s LRU
     // TTL to expire, so an ABI update is reflected near-instantly.
@@ -113,15 +133,20 @@ export async function indexLedger(ledger, rpcClient = rpc) {
     if (onchain_seq !== null) {
       decoded.onchain_seq = onchain_seq;
     }
-    await db.upsertEvent(decoded);
-    console.log(`[${ev.ledger}] ${decoded.function}: ${decoded.description}`);
+    decodedEvents.push(decoded);
+  }
+
+  await db.persistLedger(decodedEvents, { sequence: latestLedger.sequence, hash: latestLedger.id });
+
+  for (const decoded of decodedEvents) {
+    console.log(`[${decoded.ledger}] ${decoded.function}: ${decoded.description}`);
   }
 
   // Record the time we finished processing this ledger batch
   health.lastIndexedAt = Date.now();
-  health.lastLedger = res.latestLedger;
+  health.lastLedger = latestLedger.sequence;
 
-  return res.latestLedger;
+  return latestLedger.sequence;
 }
 
 /**
@@ -228,10 +253,12 @@ async function run() {
 
   await validateNetwork(rpc);
 
-  const persisted = await db.getCursor();
-  let cursor = persisted ?? (START_LEDGER || (await rpc.getLatestLedger()).sequence - 100);
+  const checkpoint = await db.getCheckpoint();
+  const persisted = checkpoint?.last_ledger_sequence ?? (await db.getCursor());
+  let cursor =
+    persisted === null ? START_LEDGER || (await rpc.getLatestLedger()).sequence - 100 : persisted + 1;
   if (persisted !== null) {
-    console.log(`Resuming from persisted ledger ${cursor}`);
+    console.log(`Resuming after persisted ledger ${persisted}`);
   }
 
   let consecutiveErrors = 0;
@@ -240,7 +267,6 @@ async function run() {
     try {
       const latest = await indexLedger(cursor);
       cursor = latest + 1;
-      await db.setCursor(latest);
       consecutiveErrors = 0;
     } catch (err) {
       consecutiveErrors++;
