@@ -216,8 +216,7 @@ export const db = {
 
   /**
    * Persist a decoded event to the database.
-   * Uses ON CONFLICT DO NOTHING so duplicate events (e.g. from an indexer
-   * restart) are silently skipped.
+  * Skips duplicate event records (e.g. when a backfill resumes after a crash).
    * Uses pool.query — safe to call outside of init().
    *
    * @param {DecodedEvent} ev
@@ -226,8 +225,16 @@ export const db = {
   async upsertEvent(ev) {
     await pool.query(
       `INSERT INTO events (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data, sac_asset, event_addresses, onchain_seq)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT DO NOTHING`,
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
+       WHERE NOT EXISTS (
+         SELECT 1 FROM events
+         WHERE contract_id = $1
+           AND function = $2
+           AND ledger = $3
+           AND tx_hash IS NOT DISTINCT FROM $4
+           AND raw_topics = $6::jsonb
+           AND raw_data = $7
+       )`,
       [
         ev.contract_id,
         ev.function,
@@ -550,6 +557,26 @@ export const db = {
        VALUES ('last_ledger', $1)
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [String(ledger)]
+    );
+  },
+
+  async getBackfillCheckpoint(fromLedger) {
+    const key = `backfill:${fromLedger}`;
+    const { rows } = await pool.query("SELECT value FROM indexer_state WHERE key = $1", [key]);
+    if (!rows.length) {
+      return null;
+    }
+    const checkpoint = parseInt(rows[0].value, 10);
+    return Number.isNaN(checkpoint) ? null : checkpoint;
+  },
+
+  async setBackfillCheckpoint(fromLedger, ledger) {
+    const key = `backfill:${fromLedger}`;
+    await pool.query(
+      `INSERT INTO indexer_state (key, value)
+       VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value = $2`,
+      [key, String(ledger)]
     );
   },
 };

@@ -3,11 +3,12 @@ import { SorobanRpc, StrKey } from "@stellar/stellar-sdk";
 import { startApi } from "./api.js";
 import { db } from "./db.js";
 import { registerFixtures } from "./registerFixtures.js";
-import { decode, evictContractMeta } from "./decoder.js";
 import { reloadSacMap } from "./sac.js";
 import { validateNetwork } from "./validateNetwork.js";
-import { submitEvent } from "./contract.js";
 import { resolvePollMs } from "./resolvePollMs.js";
+import { dispatchContractEvent } from "./router/registry.js";
+
+export { isExplorerUpdateEvent, updateEventContractId } from "./router/registry.js";
 
 dotenv.config();
 
@@ -17,7 +18,6 @@ const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.
 const START_LEDGER = Number(process.env.START_LEDGER || 0);
 const POLL_MS = resolvePollMs();
 const RPC_ERROR_THRESHOLD = 3;
-const EXPLORER_CONTRACT_ID = process.env.SOROBAN_EXPLORER_CONTRACT_ID;
 
 /**
  * Advisory lock id used to serialize migrations across indexer instances.
@@ -87,88 +87,50 @@ export function extractAddresses(values, found = new Set()) {
   return [...found];
 }
 
-export async function indexLedger(ledger, rpcClient = rpc) {
-  // getEvents supports cursor-based pagination; we use ledger range here
-  const res = await rpcClient.getEvents({
-    startLedger: ledger,
-    filters: [{ type: "contract" }],
-    limit: 200,
-  });
+export async function indexLedger(
+  ledger,
+  rpcClient = rpc,
+  { onlyLedger = null, submitOnchain = true } = {}
+) {
+  let paginationCursor;
+  let latestLedger = ledger;
 
-  for (const ev of res.events) {
-    // On-chain `update` events from the explorer contract let us invalidate
-    // the in-memory ABI cache immediately, instead of waiting for the 60s LRU
-    // TTL to expire, so an ABI update is reflected near-instantly.
-    if (isExplorerUpdateEvent(ev)) {
-      const targetContractId = updateEventContractId(ev);
-      if (targetContractId) {
-        evictContractMeta(targetContractId);
+  while (true) {
+    const res = await rpcClient.getEvents({
+      startLedger: ledger,
+      filters: [{ type: "contract" }],
+      pagination: { limit: 200, ...(paginationCursor ? { cursor: paginationCursor } : {}) },
+    });
+    latestLedger = res.latestLedger ?? latestLedger;
+
+    let reachedEndLedger = false;
+    for (const ev of res.events) {
+      if (onlyLedger !== null && ev.ledger > onlyLedger) {
+        reachedEndLedger = true;
+        break;
       }
-      continue;
+      if (onlyLedger === null || ev.ledger === onlyLedger) {
+        await dispatchContractEvent(ev, { submitOnchain });
+      }
     }
 
-    const decoded = await decode(ev);
-    decoded.event_addresses = extractAddresses([decoded.topic, decoded.data]);
-    const onchain_seq = await submitEvent(decoded);
-    if (onchain_seq !== null) {
-      decoded.onchain_seq = onchain_seq;
+    const nextCursor = res.cursor;
+    if (
+      reachedEndLedger ||
+      res.events.length === 0 ||
+      !nextCursor ||
+      nextCursor === paginationCursor
+    ) {
+      break;
     }
-    await db.upsertEvent(decoded);
-    console.log(`[${ev.ledger}] ${decoded.function}: ${decoded.description}`);
+    paginationCursor = nextCursor;
   }
 
   // Record the time we finished processing this ledger batch
   health.lastIndexedAt = Date.now();
-  health.lastLedger = res.latestLedger;
+  health.lastLedger = onlyLedger ?? latestLedger;
 
-  return res.latestLedger;
-}
-
-/**
- * Return true when an event is the explorer contract's `update` event, which
- * signals that a registered contract's ABI metadata changed on-chain.
- *
- * The first topic is the `update` symbol; the second is the target contract's
- * raw 32-byte id held in `BytesN<32>`.
- *
- * @param {object} ev - Raw event object from SorobanRpc.getEvents()
- * @returns {boolean}
- */
-export function isExplorerUpdateEvent(ev) {
-  if (!EXPLORER_CONTRACT_ID || ev.contractId !== EXPLORER_CONTRACT_ID) {
-    return false;
-  }
-  const topic = ev.topic?.[0];
-  if (!topic) {
-    return false;
-  }
-  try {
-    const symbol =
-      typeof topic.sym === "function" ? topic.sym() : topic.value?.()?.sym();
-    return symbol === "update";
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Extract the strkey contract id (C…) of the contract whose ABI was updated
- * from an explorer `update` event, or null if it cannot be recovered.
- *
- * @param {object} ev - Raw event object from SorobanRpc.getEvents()
- * @returns {string|null}
- */
-export function updateEventContractId(ev) {
-  const topic = ev.topic?.[1];
-  if (!topic) {
-    return null;
-  }
-  try {
-    const bytes = topic.bytes();
-    return StrKey.encodeContract(bytes);
-  } catch {
-    return null;
-  }
+  return onlyLedger ?? latestLedger;
 }
 
 let shuttingDown = false;

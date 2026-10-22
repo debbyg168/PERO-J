@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "backfill": "node src/backfill.js",
     "test": "node --test 'test/*.test.js'",
     "lint": "eslint src/",
     "format": "prettier --write src/",
