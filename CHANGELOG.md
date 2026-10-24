@@ -1018,6 +1018,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`31bf74c`](../../commit/31bf74c43d63faff4361969f1a10c79efee17144))
+
 - Auto-update CHANGELOG.md [skip ci] ([`fb067d1`](../../commit/fb067d1ed5dd07be60f8832fb7155c3d65feaf5c))
 
 - Auto-update CHANGELOG.md [skip ci] ([`9f90040`](../../commit/9f900407086563b8eeb8b05547ab292223aa44ca))
@@ -1628,6 +1630,19 @@ Closes [#942](../../issues/942)
 - Add on-chain council member registry ([`d55d33a`](../../commit/d55d33aaa0e7908ca234e5b24ca0772d4d2f2a90))
 
 Closes [#916](../../issues/916)
+
+
+- Add token burn, global bet limits, council events and BetPlaced indexer handler ([`26117b8`](../../commit/26117b83697d5d99e8d46cb3eef14cc9e13163ec))
+
+Closes [#925](../../issues/925)
+  Closes [#927](../../issues/927)
+  Closes [#928](../../issues/928)
+  Closes [#930](../../issues/930)
+
+  - ipredict-token: burn(caller, amount) with balance check, atomic supply update, ("token","burned") event
+  - market: global per-address bet count/exposure caps, global and per-market max bet, admin-configurable
+  - market: ("council","voted") and ("council","threshold_reached") events
+  - indexer: bet-placed handler, atomic bets/markets update, idempotent on (tx_hash, event_index)
 
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
