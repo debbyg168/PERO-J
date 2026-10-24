@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`4e7ea61`](../../commit/4e7ea611441b0b7c7d3106ae388bc1c98beea083))
+
 - Auto-update CHANGELOG.md [skip ci] ([`defb4ce`](../../commit/defb4cef31cd42145306fb563d280767422117c4))
 
 - Auto-update CHANGELOG.md [skip ci] ([`69c3c67`](../../commit/69c3c6704120dcb838402b0c4d8d7027a9a9004b))
@@ -1577,6 +1579,8 @@ Add hourly quorum checks and PagerDuty escalation at 24h, 48h, and 60h. Resolve 
 
   Resolves [#931](../../issues/931)
 
+
+- Reject stale adapter responses with failover ([`11fb743`](../../commit/11fb743a6a8ce4df031766e9b851c44e8c61f045))
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
 
