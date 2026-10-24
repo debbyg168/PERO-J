@@ -44,6 +44,24 @@ export class Database {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
     `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS dlq_events (
+        id SERIAL PRIMARY KEY,
+        ledger_sequence BIGINT NOT NULL,
+        tx_hash VARCHAR(64) NOT NULL,
+        topic VARCHAR(128) NOT NULL,
+        payload JSONB NOT NULL,
+        error_message TEXT NOT NULL,
+        retry_count INT NOT NULL DEFAULT 0,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_dlq_events_retry_created
+        ON dlq_events (retry_count, created_at);
+    `);
   }
 
   async close(): Promise<void> {

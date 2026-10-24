@@ -1,5 +1,5 @@
 [package]
-name    = "market"
+name    = "soroban-market-contract"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -14,10 +14,11 @@ soroban-sdk = { version = "=21.7.7", features = ["alloc"] }
 soroban-sdk = { version = "=21.7.7", features = ["testutils"] }
 
 [profile.release]
-opt-level       = "z"
+opt-level     = "z"
 overflow-checks = true
-debug           = 0
-strip           = "symbols"
-panic           = "abort"
-codegen-units   = 1
-lto             = true
+debug         = 0
+strip         = "symbols"
+debug-assertions = false
+panic         = "abort"
+codegen-units = 1
+lto           = true

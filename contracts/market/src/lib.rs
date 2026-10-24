@@ -1,274 +1,259 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
-    panic_with_error,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, vec, Address, Env,
+    IntoVal, Symbol,
 };
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    NotInitialized     = 1,
-    AlreadyInitialized = 2,
-    InvalidAmount      = 3,
-    BetCountExceeded   = 4,
-    BetAmountExceeded  = 5,
-    ExposureExceeded   = 6,
-    NotCouncilMember   = 7,
-    AlreadyVoted       = 8,
-    InvalidConfig      = 9,
+    AlreadyInitialised = 1,
+    NotInitialised = 2,
+    Unauthorized = 3,
+    ContractPaused = 4,
+    InvalidAmount = 5,
+    InvalidState = 6,
 }
 
-/// Risk limits, configurable by the protocol admin. A value of 0 disables that limit.
+/// Single-field market state replacing the separate
+/// `resolved` / `cancelled` / `outcome` / `disputed` flags.
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Limits {
-    /// Max bets one address may place across all markets.
-    pub max_bets_per_user: u32,
-    /// Max single bet amount (global default).
-    pub max_bet_amount: i128,
-    /// Max total stake one address may have across all markets.
-    pub max_exposure_per_user: i128,
-    /// Platform fee in basis points, taken from the gross amount.
-    pub fee_bps: u32,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarketStatus {
+    Open,
+    ResolvedYes,
+    ResolvedNo,
+    Disputed,
+    Cancelled,
 }
 
 #[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Council {
-    pub members: Vec<Address>,
-    pub threshold: u32,
-    /// Seconds between the threshold being reached and the timelock deadline.
-    pub timelock_secs: u64,
+#[derive(Clone)]
+pub struct Market {
+    pub status: MarketStatus,
+    pub yes_pool: i128,
+    pub no_pool: i128,
+}
+
+/// Pre-packing layout, kept so existing active markets still deserialize.
+#[contracttype]
+#[derive(Clone)]
+pub struct LegacyMarket {
+    pub resolved: bool,
+    pub cancelled: bool,
+    pub outcome: bool,
+    pub disputed: bool,
+    pub yes_pool: i128,
+    pub no_pool: i128,
 }
 
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Limits,
-    Council,
-    MarketMaxBet(u64),
-    UserBets(Address),
-    UserExposure(Address),
-    MarketTotals(u64), // (total_yes, total_no, bet_count)
-    Vote(u64, Address),
-    Tally(u64, u32),
-    Resolved(u64),
+    Token,
+    Registry,
+    IsPaused,
+    Market,
+    LegacyMarket,
+    HasBet(Address),
 }
 
 #[contract]
-pub struct Market;
+pub struct MarketContract;
 
-fn require_admin(env: &Env) {
-    let a: Address = env
-        .storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-    a.require_auth();
-}
-
-fn limits(env: &Env) -> Limits {
+fn admin(env: &Env) -> Address {
     env.storage()
         .instance()
-        .get(&DataKey::Limits)
-        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
+        .get(&DataKey::Admin)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialised))
+}
+
+fn require_admin(env: &Env, caller: &Address) {
+    caller.require_auth();
+    if *caller != admin(env) {
+        panic_with_error!(env, Error::Unauthorized);
+    }
+}
+
+fn require_not_paused(env: &Env) {
+    if env.storage().instance().get(&DataKey::IsPaused).unwrap_or(false) {
+        panic_with_error!(env, Error::ContractPaused);
+    }
+}
+
+fn load_market(env: &Env) -> Market {
+    if let Some(m) = env.storage().persistent().get::<_, Market>(&DataKey::Market) {
+        return m;
+    }
+    let l: LegacyMarket = env
+        .storage()
+        .persistent()
+        .get(&DataKey::LegacyMarket)
+        .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialised));
+    from_legacy(&l)
+}
+
+fn from_legacy(l: &LegacyMarket) -> Market {
+    let status = if l.cancelled {
+        MarketStatus::Cancelled
+    } else if l.disputed {
+        MarketStatus::Disputed
+    } else if l.resolved {
+        if l.outcome { MarketStatus::ResolvedYes } else { MarketStatus::ResolvedNo }
+    } else {
+        MarketStatus::Open
+    };
+    Market { status, yes_pool: l.yes_pool, no_pool: l.no_pool }
 }
 
 #[contractimpl]
-impl Market {
-    pub fn initialize(env: Env, admin: Address, limits: Limits) {
+impl MarketContract {
+    pub fn init(env: Env, admin: Address, token: Address, registry: Option<Address>) {
         if env.storage().instance().has(&DataKey::Admin) {
-            panic_with_error!(&env, Error::AlreadyInitialized);
-        }
-        if limits.fee_bps > 10_000 {
-            panic_with_error!(&env, Error::InvalidConfig);
+            panic_with_error!(&env, Error::AlreadyInitialised);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Limits, &limits);
-    }
-
-    // ── Governance ───────────────────────────────────────────────────────────
-
-    pub fn set_limits(env: Env, limits: Limits) {
-        require_admin(&env);
-        if limits.fee_bps > 10_000 {
-            panic_with_error!(&env, Error::InvalidConfig);
+        env.storage().instance().set(&DataKey::Token, &token);
+        if let Some(r) = registry {
+            env.storage().instance().set(&DataKey::Registry, &r);
         }
-        env.storage().instance().set(&DataKey::Limits, &limits);
+        env.storage().instance().set(&DataKey::IsPaused, &false);
+        env.storage().persistent().set(
+            &DataKey::Market,
+            &Market { status: MarketStatus::Open, yes_pool: 0, no_pool: 0 },
+        );
     }
 
-    /// Per-market max bet amount; 0 clears the override and falls back to the global value.
-    pub fn set_market_max_bet(env: Env, market_id: u64, max_bet_amount: i128) {
-        require_admin(&env);
-        if max_bet_amount < 0 {
-            panic_with_error!(&env, Error::InvalidConfig);
-        }
-        env.storage().persistent().set(&DataKey::MarketMaxBet(market_id), &max_bet_amount);
+    pub fn pause(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::IsPaused, &true);
     }
 
-    pub fn set_council(env: Env, members: Vec<Address>, threshold: u32, timelock_secs: u64) {
-        require_admin(&env);
-        if threshold == 0 || threshold > members.len() {
-            panic_with_error!(&env, Error::InvalidConfig);
-        }
-        env.storage()
-            .instance()
-            .set(&DataKey::Council, &Council { members, threshold, timelock_secs });
+    pub fn unpause(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::IsPaused, &false);
     }
 
-    // ── Betting ──────────────────────────────────────────────────────────────
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::IsPaused).unwrap_or(false)
+    }
 
-    /// Place a bet. Rejected if it would breach the global bet count, the
-    /// global/per-market max bet amount, or the per-address exposure cap.
-    pub fn place_bet(env: Env, bettor: Address, market_id: u64, is_yes: bool, amount: i128) {
+    /// Rewrites a legacy flag-based market into the packed status form.
+    pub fn migrate(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        let l: LegacyMarket = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LegacyMarket)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidState));
+        env.storage().persistent().set(&DataKey::Market, &from_legacy(&l));
+        env.storage().persistent().remove(&DataKey::LegacyMarket);
+    }
+
+    pub fn place_bet(env: Env, bettor: Address, yes: bool, amount: i128) {
+        require_not_paused(&env);
         bettor.require_auth();
         if amount <= 0 {
             panic_with_error!(&env, Error::InvalidAmount);
         }
-        let l = limits(&env);
-        let store = env.storage().persistent();
-
-        let max_bet: i128 = match store.get::<_, i128>(&DataKey::MarketMaxBet(market_id)) {
-            Some(m) if m > 0 => m,
-            _ => l.max_bet_amount,
-        };
-        if max_bet > 0 && amount > max_bet {
-            panic_with_error!(&env, Error::BetAmountExceeded);
+        let mut m = load_market(&env);
+        if m.status != MarketStatus::Open {
+            panic_with_error!(&env, Error::InvalidState);
         }
-
-        let count: u32 = store.get(&DataKey::UserBets(bettor.clone())).unwrap_or(0);
-        if l.max_bets_per_user > 0 && count >= l.max_bets_per_user {
-            panic_with_error!(&env, Error::BetCountExceeded);
-        }
-
-        let exposure: i128 = store.get(&DataKey::UserExposure(bettor.clone())).unwrap_or(0);
-        if l.max_exposure_per_user > 0 && exposure + amount > l.max_exposure_per_user {
-            panic_with_error!(&env, Error::ExposureExceeded);
-        }
-
-        let net = amount - amount * (l.fee_bps as i128) / 10_000;
-        let (mut yes, mut no, bets): (i128, i128, u32) =
-            store.get(&DataKey::MarketTotals(market_id)).unwrap_or((0, 0, 0));
-        if is_yes {
-            yes += net;
-        } else {
-            no += net;
-        }
-
-        store.set(&DataKey::UserBets(bettor.clone()), &(count + 1));
-        store.set(&DataKey::UserExposure(bettor.clone()), &(exposure + amount));
-        store.set(&DataKey::MarketTotals(market_id), &(yes, no, bets + 1));
-
-        env.events().publish(
-            (symbol_short!("bet"), symbol_short!("placed"), market_id),
-            (bettor, is_yes, amount, net, env.ledger().timestamp()),
+        let token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        env.invoke_contract::<()>(
+            &token,
+            &Symbol::new(&env, "transfer"),
+            vec![&env, bettor.to_val(), env.current_contract_address().to_val(), amount.into_val(&env)],
         );
+        if yes { m.yes_pool += amount } else { m.no_pool += amount }
+        env.storage().persistent().set(&DataKey::Market, &m);
+
+        let first = !env.storage().persistent().has(&DataKey::HasBet(bettor.clone()));
+        if first {
+            env.storage().persistent().set(&DataKey::HasBet(bettor.clone()), &true);
+            if let Some(reg) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
+                env.invoke_contract::<()>(
+                    &reg,
+                    &Symbol::new(&env, "record_first_bet"),
+                    vec![&env, env.current_contract_address().to_val(), bettor.to_val()],
+                );
+            }
+        }
     }
 
-    pub fn user_bet_count(env: Env, bettor: Address) -> u32 {
-        env.storage().persistent().get(&DataKey::UserBets(bettor)).unwrap_or(0)
+    pub fn submit_outcome(env: Env, admin: Address, yes: bool) {
+        require_not_paused(&env);
+        require_admin(&env, &admin);
+        let mut m = load_market(&env);
+        if m.status != MarketStatus::Open {
+            panic_with_error!(&env, Error::InvalidState);
+        }
+        m.status = if yes { MarketStatus::ResolvedYes } else { MarketStatus::ResolvedNo };
+        env.storage().persistent().set(&DataKey::Market, &m);
     }
 
-    pub fn user_exposure(env: Env, bettor: Address) -> i128 {
-        env.storage().persistent().get(&DataKey::UserExposure(bettor)).unwrap_or(0)
+    pub fn challenge_outcome(env: Env, challenger: Address) {
+        require_not_paused(&env);
+        challenger.require_auth();
+        let mut m = load_market(&env);
+        if m.status != MarketStatus::ResolvedYes && m.status != MarketStatus::ResolvedNo {
+            panic_with_error!(&env, Error::InvalidState);
+        }
+        m.status = MarketStatus::Disputed;
+        env.storage().persistent().set(&DataKey::Market, &m);
     }
 
-    // ── Council ──────────────────────────────────────────────────────────────
-
-    /// Cast a council vote on a disputed market. Emits `("council","voted")` and,
-    /// the first time an outcome reaches the threshold, `("council","threshold_reached")`.
-    pub fn council_vote(env: Env, voter: Address, market_id: u64, outcome: u32) {
-        voter.require_auth();
-        let council: Council = env
-            .storage()
-            .instance()
-            .get(&DataKey::Council)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
-        if !council.members.contains(&voter) {
-            panic_with_error!(&env, Error::NotCouncilMember);
-        }
-        let store = env.storage().persistent();
-        let vote_key = DataKey::Vote(market_id, voter.clone());
-        if store.has(&vote_key) {
-            panic_with_error!(&env, Error::AlreadyVoted);
-        }
-        store.set(&vote_key, &outcome);
-
-        let tally_key = DataKey::Tally(market_id, outcome);
-        let votes: u32 = store.get(&tally_key).unwrap_or(0) + 1;
-        store.set(&tally_key, &votes);
-
-        env.events().publish(
-            (symbol_short!("council"), symbol_short!("voted")),
-            (market_id, voter, outcome, votes),
-        );
-
-        if votes >= council.threshold && !store.has(&DataKey::Resolved(market_id)) {
-            store.set(&DataKey::Resolved(market_id), &outcome);
-            let deadline = env.ledger().timestamp() + council.timelock_secs;
-            env.events().publish(
-                (symbol_short!("council"), Symbol::new(&env, "threshold_reached")),
-                (market_id, outcome, deadline),
-            );
-        }
+    pub fn get_market(env: Env) -> Market {
+        load_market(&env)
     }
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, vec};
+    use soroban_sdk::testutils::Address as _;
 
-    fn setup(l: Limits) -> (Env, MarketClient<'static>) {
+    fn setup() -> (Env, MarketContractClient<'static>, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let c = MarketClient::new(&env, &env.register_contract(None, Market));
-        c.initialize(&Address::generate(&env), &l);
-        (env, c)
-    }
-
-    fn lim(bets: u32, bet: i128, exp: i128) -> Limits {
-        Limits { max_bets_per_user: bets, max_bet_amount: bet, max_exposure_per_user: exp, fee_bps: 100 }
-    }
-
-    #[test]
-    fn global_bet_count_spans_markets() {
-        let (env, c) = setup(lim(2, 0, 0));
-        let u = Address::generate(&env);
-        c.place_bet(&u, &1, &true, &10);
-        c.place_bet(&u, &2, &false, &10);
-        assert!(c.try_place_bet(&u, &3, &true, &10).is_err());
-        assert_eq!(c.user_bet_count(&u), 2);
+        let id = env.register_contract(None, MarketContract);
+        let c = MarketContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        c.init(&admin, &Address::generate(&env), &None);
+        (env, c, admin)
     }
 
     #[test]
-    fn exposure_and_amount_caps_reject() {
-        let (env, c) = setup(lim(0, 50, 80));
-        let u = Address::generate(&env);
-        assert!(c.try_place_bet(&u, &1, &true, &51).is_err());
-        c.place_bet(&u, &1, &true, &50);
-        assert!(c.try_place_bet(&u, &2, &true, &31).is_err());
-        assert_eq!(c.user_exposure(&u), 50);
+    fn pause_blocks_mutations_not_reads() {
+        let (env, c, admin) = setup();
+        c.pause(&admin);
+        assert!(c.is_paused());
+        assert_eq!(c.try_submit_outcome(&admin, &true), Err(Ok(soroban_sdk::Error::from_contract_error(Error::ContractPaused as u32))));
+        assert_eq!(c.try_challenge_outcome(&Address::generate(&env)), Err(Ok(soroban_sdk::Error::from_contract_error(Error::ContractPaused as u32))));
+        assert_eq!(
+            c.try_place_bet(&Address::generate(&env), &true, &1),
+            Err(Ok(soroban_sdk::Error::from_contract_error(Error::ContractPaused as u32)))
+        );
+        assert_eq!(c.get_market().status, MarketStatus::Open);
+        c.unpause(&admin);
+        c.submit_outcome(&admin, &true);
+        assert_eq!(c.get_market().status, MarketStatus::ResolvedYes);
     }
 
     #[test]
-    fn per_market_override_applies() {
-        let (env, c) = setup(lim(0, 100, 0));
-        c.set_market_max_bet(&1, &10);
-        let u = Address::generate(&env);
-        assert!(c.try_place_bet(&u, &1, &true, &11).is_err());
-        c.place_bet(&u, &2, &true, &11);
-    }
-
-    #[test]
-    fn council_votes_are_restricted_and_single() {
-        let (env, c) = setup(lim(0, 0, 0));
-        let (a, b) = (Address::generate(&env), Address::generate(&env));
-        c.set_council(&vec![&env, a.clone(), b.clone()], &2, &3600);
-        c.council_vote(&a, &1, &0);
-        c.council_vote(&b, &1, &0);
-        assert!(c.try_council_vote(&a, &1, &0).is_err());
-        assert!(c.try_council_vote(&Address::generate(&env), &1, &0).is_err());
+    fn legacy_market_migrates() {
+        let (env, c, admin) = setup();
+        env.as_contract(&c.address, || {
+            env.storage().persistent().remove(&DataKey::Market);
+            env.storage().persistent().set(
+                &DataKey::LegacyMarket,
+                &LegacyMarket { resolved: true, cancelled: false, outcome: false, disputed: false, yes_pool: 1, no_pool: 2 },
+            );
+        });
+        assert_eq!(c.get_market().status, MarketStatus::ResolvedNo);
+        c.migrate(&admin);
+        assert_eq!(c.get_market().no_pool, 2);
     }
 }
