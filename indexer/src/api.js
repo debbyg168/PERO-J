@@ -103,6 +103,12 @@ export function createApp() {
   app.use(createCorsMiddleware());
   app.use(express.json());
 
+  app.get("/metrics", (_req, res) => {
+    res.type("text/plain; version=0.0.4").send(renderMetrics());
+  });
+
+  registerOracleRoutes(app, requireAdminKey, asyncHandler);
+
   // GET /health — liveness + readiness probe for container orchestrators and uptime monitors
   app.get(
     "/health",
