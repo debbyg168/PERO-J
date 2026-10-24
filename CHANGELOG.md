@@ -1013,6 +1013,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`4a27fc6`](../../commit/4a27fc646d8709a95609701f9e57e7c08a3b7114))
+
 - Auto-update CHANGELOG.md [skip ci] ([`f6afe0d`](../../commit/f6afe0d18558710e8f6779d10bd1560ecf5a010b))
 
 - Auto-update CHANGELOG.md [skip ci] ([`4e7ea61`](../../commit/4e7ea611441b0b7c7d3106ae388bc1c98beea083))
@@ -1585,6 +1587,14 @@ Add hourly quorum checks and PagerDuty escalation at 24h, 48h, and 60h. Resolve 
 - Reject stale adapter responses with failover ([`11fb743`](../../commit/11fb743a6a8ce4df031766e9b851c44e8c61f045))
 
 - Persist indexer ledger checkpoints atomically ([`6a5df6f`](../../commit/6a5df6f0b3940158cf32a68f562841e6568af899))
+
+- Unmapped event telemetry, Redis pub/sub, oracle signature verification and circuit breaker ([`e55b62f`](../../commit/e55b62fbc7cd8235f872e9360cfc7788ec1d74d6))
+
+Closes [#942](../../issues/942)
+  Closes [#943](../../issues/943)
+  Closes [#950](../../issues/950)
+  Closes [#952](../../issues/952)
+
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
 
