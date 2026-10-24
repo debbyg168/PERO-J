@@ -75,6 +75,9 @@ pub const MAX_PAGE: u32 = 200;
 /// Maximum number of addresses that may sit on the indexer allowlist.
 pub const MAX_INDEXERS: u32 = 20;
 
+/// Maximum number of council members.
+pub const MAX_COUNCIL_MEMBERS: u32 = 20;
+
 const DAY_IN_LEDGERS: u32 = 17_280;
 /// Extend an entry whenever its remaining TTL drops below 30 days …
 const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
@@ -82,6 +85,15 @@ const TTL_THRESHOLD: u32 = 30 * DAY_IN_LEDGERS;
 const TTL_EXTEND_TO: u32 = 90 * DAY_IN_LEDGERS;
 
 // ── Data types ────────────────────────────────────────────────────────────────
+
+/// Dispute-resolution council: member set and M-of-N approval threshold.
+/// Invariant: `members.len() == 0` or `1 <= threshold <= members.len()`.
+#[contracttype]
+#[derive(Clone)]
+pub struct CouncilConfig {
+    pub members:   Vec<Address>,
+    pub threshold: u32,
+}
 
 /// ABI-like metadata for a registered contract.
 #[contracttype]
@@ -167,6 +179,31 @@ impl ExplorerContract {
             .persistent()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error!(env, Error::NotFound))
+    }
+
+    fn load_council(env: &Env) -> CouncilConfig {
+        env.storage().persistent().get(&DataKey::Council).unwrap_or(CouncilConfig {
+            members: Vec::new(env),
+            threshold: 0,
+        })
+    }
+
+    fn council_for_admin(env: &Env, admin: &Address) -> CouncilConfig {
+        admin.require_auth();
+        if *admin != Self::admin(env) {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+        Self::load_council(env)
+    }
+
+    fn save_council(env: &Env, cfg: &CouncilConfig, who: Address, action: Symbol) {
+        env.storage().persistent().set(&DataKey::Council, cfg);
+        env.storage().persistent().extend_ttl(&DataKey::Council, TTL_THRESHOLD, TTL_EXTEND_TO);
+        Self::bump_ttl(env);
+        env.events().publish(
+            (symbol_short!("council"), Symbol::new(env, "member_updated")),
+            (who, action, cfg.threshold),
+        );
     }
 
     /// Bump the TTL of the instance entry and of the admin entry.
@@ -374,6 +411,55 @@ impl ExplorerContract {
         allowlist.contains(&address)
             || env.storage().persistent().get::<_, Address>(&DataKey::Admin)
                   .map_or(false, |a| a == address)
+    }
+
+    // ── Council registry ──────────────────────────────────────────────────────
+
+    /// Add `new_member` to the council. The first member sets the threshold to 1.
+    pub fn add_council_member(env: Env, admin: Address, new_member: Address) {
+        let mut cfg = Self::council_for_admin(&env, &admin);
+        if cfg.members.contains(&new_member) {
+            panic_with_error!(&env, Error::AlreadyExists);
+        }
+        if cfg.members.len() >= MAX_COUNCIL_MEMBERS {
+            panic_with_error!(&env, Error::LimitExceeded);
+        }
+        cfg.members.push_back(new_member.clone());
+        if cfg.threshold == 0 {
+            cfg.threshold = 1;
+        }
+        Self::save_council(&env, &cfg, new_member, symbol_short!("added"));
+    }
+
+    /// Remove `member`; fails if the remaining members would fall below the threshold.
+    pub fn remove_council_member(env: Env, admin: Address, member: Address) {
+        let mut cfg = Self::council_for_admin(&env, &admin);
+        let idx = cfg.members
+            .first_index_of(&member)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
+        if cfg.members.len() - 1 < cfg.threshold {
+            panic_with_error!(&env, Error::InvalidThreshold);
+        }
+        cfg.members.remove(idx);
+        if cfg.members.is_empty() {
+            cfg.threshold = 0;
+        }
+        Self::save_council(&env, &cfg, member, symbol_short!("removed"));
+    }
+
+    /// Set the approval threshold; must satisfy `1 <= threshold <= members.len()`.
+    pub fn set_council_threshold(env: Env, admin: Address, threshold: u32) {
+        let mut cfg = Self::council_for_admin(&env, &admin);
+        if threshold == 0 || threshold > cfg.members.len() {
+            panic_with_error!(&env, Error::InvalidThreshold);
+        }
+        cfg.threshold = threshold;
+        Self::save_council(&env, &cfg, admin, symbol_short!("thresh"));
+    }
+
+    /// Current council members and threshold.
+    pub fn get_council(env: Env) -> CouncilConfig {
+        Self::load_council(&env)
     }
 
     // ── Contract Registry ─────────────────────────────────────────────────────
