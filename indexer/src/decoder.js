@@ -206,6 +206,18 @@ function buildDescription(fn, args, data, contractName) {
       const [from, amount, token] = args;
       return `Address ${fmt(from)} withdrew ${amount} ${token ?? ""} from ${contractName}`;
     }
+    case "oracle_submission": {
+      const [marketId, submitter, outcome] = args;
+      return `Oracle ${fmt(submitter)} submitted outcome "${outcome}" for market ${marketId} on ${contractName}`;
+    }
+    case "oracle_dispute": {
+      const [marketId, disputer] = args;
+      return `Address ${fmt(disputer)} disputed oracle submission for market ${marketId} on ${contractName}`;
+    }
+    case "oracle_finalized": {
+      const [marketId, finalOutcome] = args;
+      return `Oracle finalized market ${marketId} with outcome "${finalOutcome}" on ${contractName}`;
+    }
     default:
       return genericDescription(fn, args, data, contractName);
   }
