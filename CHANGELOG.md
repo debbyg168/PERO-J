@@ -1018,6 +1018,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`fb067d1`](../../commit/fb067d1ed5dd07be60f8832fb7155c3d65feaf5c))
+
 - Auto-update CHANGELOG.md [skip ci] ([`9f90040`](../../commit/9f900407086563b8eeb8b05547ab292223aa44ca))
 
 - Auto-update CHANGELOG.md [skip ci] ([`7c03380`](../../commit/7c033801d6a07d131ae62abe8349c926882e8c8a))
@@ -1622,6 +1624,11 @@ Closes [#942](../../issues/942)
 
 
 - Unify event routing and backfill ([`36a1d2b`](../../commit/36a1d2bca347b3da1bbe1601f70d8670b6a6100d))
+
+- Add on-chain council member registry ([`d55d33a`](../../commit/d55d33aaa0e7908ca234e5b24ca0772d4d2f2a90))
+
+Closes [#916](../../issues/916)
+
 
 - Configure database pool size ([`df7e5bb`](../../commit/df7e5bbd7b70c022f583f715bd716993b77d7f55))
 
