@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import pg from "pg";
 import { eventEmitter } from "./events.js";
 
@@ -38,6 +39,29 @@ const pool = new pg.Pool({
 });
 const MIGRATION_LOCK_ID = 57_056;
 const MAX_PAGE = 200;
+const CHECKPOINT_SERVICE_NAME = "soroban-indexer";
+const EVENT_INSERT_SQL = `INSERT INTO events (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data, sac_asset, event_addresses, onchain_seq)
+  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+  ON CONFLICT DO NOTHING`;
+
+function eventInsertParams(ev) {
+  return [
+    ev.contract_id,
+    ev.function,
+    ev.ledger,
+    ev.tx_hash,
+    ev.description,
+    JSON.stringify(ev.raw_topics),
+    ev.raw_data,
+    ev.sac_asset ?? null,
+    ev.event_addresses ?? [],
+    ev.onchain_seq ?? null,
+  ];
+}
+
+async function insertEvent(queryable, ev) {
+  await queryable.query(EVENT_INSERT_SQL, eventInsertParams(ev));
+}
 
 function escapeLikePattern(value) {
   return String(value ?? "")
@@ -269,24 +293,47 @@ export const db = {
    * @returns {Promise<void>}
    */
   async upsertEvent(ev) {
-    await pool.query(
-      `INSERT INTO events (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data, sac_asset, event_addresses, onchain_seq)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       ON CONFLICT DO NOTHING`,
-      [
-        ev.contract_id,
-        ev.function,
-        ev.ledger,
-        ev.tx_hash,
-        ev.description,
-        JSON.stringify(ev.raw_topics),
-        ev.raw_data,
-        ev.sac_asset ?? null,
-        ev.event_addresses ?? [],
-        ev.onchain_seq ?? null,
-      ]
-    );
+    await insertEvent(pool, ev);
     eventEmitter.emit("event", ev);
+  },
+
+  /**
+   * Persist all events from a ledger and its checkpoint atomically.
+   * @param {DecodedEvent[]} events
+   * @param {{ sequence: number, hash: string }} checkpoint
+   * @returns {Promise<void>}
+   */
+  async persistLedger(events, { sequence, hash }) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const ev of events) {
+        await insertEvent(client, ev);
+      }
+      await client.query(
+        `INSERT INTO checkpoint_state (service_name, last_ledger_sequence, last_ledger_hash)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (service_name) DO UPDATE SET
+           last_ledger_sequence = EXCLUDED.last_ledger_sequence,
+           last_ledger_hash = EXCLUDED.last_ledger_hash,
+           updated_at = NOW()`,
+        [CHECKPOINT_SERVICE_NAME, sequence, hash]
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackErr) {
+        console.error("Failed to roll back ledger transaction:", rollbackErr);
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    for (const ev of events) {
+      eventEmitter.emit("event", ev);
+    }
   },
 
   /**
@@ -629,6 +676,25 @@ export const db = {
       return null;
     }
     return cursor;
+  },
+
+  /**
+   * Read the last atomically committed ledger checkpoint.
+   * @returns {Promise<{ last_ledger_sequence: number, last_ledger_hash: string|null }|null>}
+   */
+  async getCheckpoint() {
+    const { rows } = await pool.query(
+      "SELECT last_ledger_sequence, last_ledger_hash FROM checkpoint_state WHERE service_name = $1",
+      [CHECKPOINT_SERVICE_NAME]
+    );
+    if (!rows.length) {
+      return null;
+    }
+    const sequence = Number(rows[0].last_ledger_sequence);
+    if (!Number.isSafeInteger(sequence)) {
+      throw new Error(`Invalid checkpoint ledger sequence: ${rows[0].last_ledger_sequence}`);
+    }
+    return { last_ledger_sequence: sequence, last_ledger_hash: rows[0].last_ledger_hash };
   },
 
   /**
