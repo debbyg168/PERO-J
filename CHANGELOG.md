@@ -1018,6 +1018,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`550b774`](../../commit/550b774c7cd3e46fbe0ce84c2a8aba802afd25d6))
+
 - Auto-update CHANGELOG.md [skip ci] ([`092d267`](../../commit/092d267be498b29ba1e5ac1852fd299ed70900fb))
 
 - Auto-update CHANGELOG.md [skip ci] ([`4a27fc6`](../../commit/4a27fc646d8709a95609701f9e57e7c08a3b7114))
@@ -1412,6 +1414,18 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 
 ### Features
+
+- Add market, IPREDICT token and referral registry contracts ([`46a47ed`](../../commit/46a47edf7c80d55db317f50c33bfad01da23d3d7))
+
+Closes [#926](../../issues/926)
+  Closes [#924](../../issues/924)
+  Closes [#923](../../issues/923)
+  Closes [#921](../../issues/921)
+
+  - token: multi-minter authorization (add_minter/remove_minter)
+  - market: pause/unpause circuit breaker, packed MarketStatus enum with legacy migration
+  - referral_registry: balance gate, cooldown, welcome bonus only after first bet
+
 
 - Add politics and science-weather adapters ([`b76cff2`](../../commit/b76cff2b06c739da9d2ed5f689384eca51c4a4eb))
 
