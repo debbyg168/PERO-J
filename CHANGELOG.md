@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Bug Fixes
 
+- Add full jitter backoff to Soroban RPC retries ([`fea638f`](../../commit/fea638fd26eea96d91de73c8a386130c74b9554c))
+
+Closes [#938](../../issues/938)
+
+
 - [#1010](../../issues/1010) ci: add PostgreSQL and Redis service containers for automated ([`8a75968`](../../commit/8a75968f5bab518935890dd1dd367f3b1f7df5f8))
 
 Closes [#1010](../../issues/1010)
@@ -1012,6 +1017,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 
 ### Documentation
+
+- Auto-update CHANGELOG.md [skip ci] ([`092d267`](../../commit/092d267be498b29ba1e5ac1852fd299ed70900fb))
 
 - Auto-update CHANGELOG.md [skip ci] ([`4a27fc6`](../../commit/4a27fc646d8709a95609701f9e57e7c08a3b7114))
 
