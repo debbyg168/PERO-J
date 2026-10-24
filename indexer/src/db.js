@@ -152,11 +152,48 @@ const migrations = [
   },
   {
     id: 7,
-    name: "create_checkpoint_state",
-    sql: readFileSync(
-      new URL("../migrations/0015_create_checkpoint_state.sql", import.meta.url),
-      "utf8"
-    ),
+    name: "create_oracle_and_markets_tables",
+    sql: `
+      CREATE TABLE IF NOT EXISTS markets (
+        id              TEXT PRIMARY KEY,
+        contract_id     TEXT NOT NULL,
+        oracle_state    TEXT NOT NULL DEFAULT 'pending',
+        outcome         TEXT,
+        created_at      TIMESTAMPTZ DEFAULT NOW(),
+        updated_at      TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_markets_contract ON markets(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_markets_oracle_state ON markets(oracle_state);
+
+      CREATE TABLE IF NOT EXISTS oracle_submissions (
+        id              BIGSERIAL PRIMARY KEY,
+        market_id       TEXT NOT NULL,
+        submitter       TEXT NOT NULL,
+        outcome         TEXT NOT NULL,
+        ledger          BIGINT NOT NULL,
+        tx_hash         TEXT,
+        timestamp       TIMESTAMPTZ DEFAULT NOW(),
+        status          TEXT NOT NULL DEFAULT 'pending',
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_market ON oracle_submissions(market_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_status ON oracle_submissions(status);
+      CREATE INDEX IF NOT EXISTS idx_oracle_submissions_ledger ON oracle_submissions(ledger);
+
+      CREATE TABLE IF NOT EXISTS oracle_disputes (
+        id              BIGSERIAL PRIMARY KEY,
+        submission_id   BIGINT NOT NULL REFERENCES oracle_submissions(id),
+        market_id       TEXT NOT NULL,
+        disputer        TEXT NOT NULL,
+        reason          TEXT,
+        ledger          BIGINT NOT NULL,
+        tx_hash         TEXT,
+        timestamp       TIMESTAMPTZ DEFAULT NOW(),
+        created_at      TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_oracle_disputes_submission ON oracle_disputes(submission_id);
+      CREATE INDEX IF NOT EXISTS idx_oracle_disputes_market ON oracle_disputes(market_id);
+    `,
   },
 ];
 
@@ -573,6 +610,55 @@ export const db = {
   },
 
   /**
+   * Persist an unprocessable ledger event in the dead-letter queue so it is
+   * never lost across restarts or deployments.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} entry
+   * @param {number} [entry.ledger_sequence] - Ledger the event came from.
+   * @param {string} [entry.tx_hash]         - Transaction hash (max 64 chars).
+   * @param {string} [entry.topic]           - Event topic (max 128 chars).
+   * @param {*}      [entry.payload]         - Raw event payload (stored as JSONB).
+   * @param {string} [entry.error_message]   - Why the event could not be processed.
+   * @returns {Promise<number>} The id of the inserted dlq_events row.
+   */
+  async insertDlqEvent({ ledger_sequence, tx_hash, topic, payload, error_message } = {}) {
+    const { rows } = await pool.query(
+      `INSERT INTO dlq_events (ledger_sequence, tx_hash, topic, payload, error_message)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id`,
+      [
+        ledger_sequence ?? null,
+        tx_hash ?? null,
+        topic ?? null,
+        payload === undefined ? null : JSON.stringify(payload),
+        error_message ?? null,
+      ]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Record a retry attempt for a dead-lettered event by incrementing
+   * retry_count and refreshing created_at.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {number} id - The dlq_events row id.
+   * @returns {Promise<object|null>} The updated row, or null if not found.
+   */
+  async retryDlqEvent(id) {
+    const { rows } = await pool.query(
+      `UPDATE dlq_events
+       SET retry_count = COALESCE(retry_count, 0) + 1,
+           created_at  = NOW()
+       WHERE id = $1
+       RETURNING *`,
+      [id]
+    );
+    return rows[0] ?? null;
+  },
+
+  /**
    * Read the persisted indexer cursor from the indexer_state table.
    * Uses pool.query — safe to call outside of init().
    * @returns {Promise<number|null>} The last successfully indexed ledger, or null.
@@ -626,5 +712,146 @@ export const db = {
       [String(ledger)]
     );
   },
+
+  // ── Oracle & Markets ────────────────────────────────────────────────────────
+
+  /**
+   * Insert or update a market record.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} market
+   * @param {string} market.id - Market identifier
+   * @param {string} market.contract_id - Contract address
+   * @param {string} market.oracle_state - Oracle state (pending, submitted, disputed, finalized)
+   * @param {string} [market.outcome] - Optional outcome value
+   * @returns {Promise<void>}
+   */
+  async upsertMarket(market) {
+    await pool.query(
+      `INSERT INTO markets (id, contract_id, oracle_state, outcome, updated_at)
+       VALUES ($1, $2, $3, $4, NOW())
+       ON CONFLICT (id) DO UPDATE SET 
+         oracle_state = $3,
+         outcome = $4,
+         updated_at = NOW()`,
+      [market.id, market.contract_id, market.oracle_state, market.outcome ?? null]
+    );
+  },
+
+  /**
+   * Get market by ID.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} marketId
+   * @returns {Promise<object|null>}
+   */
+  async getMarket(marketId) {
+    const { rows } = await pool.query("SELECT * FROM markets WHERE id = $1", [marketId]);
+    return rows[0] ?? null;
+  },
+
+  /**
+   * Insert an oracle submission record.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} submission
+   * @param {string} submission.market_id - Market identifier
+   * @param {string} submission.submitter - Submitter address
+   * @param {string} submission.outcome - Submitted outcome
+   * @param {number} submission.ledger - Ledger number
+   * @param {string} [submission.tx_hash] - Transaction hash
+   * @param {string} [submission.status] - Status (pending, disputed, finalized)
+   * @returns {Promise<number>} The inserted submission ID
+   */
+  async insertOracleSubmission(submission) {
+    const { rows } = await pool.query(
+      `INSERT INTO oracle_submissions (market_id, submitter, outcome, ledger, tx_hash, status, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       RETURNING id`,
+      [
+        submission.market_id,
+        submission.submitter,
+        submission.outcome,
+        submission.ledger,
+        submission.tx_hash ?? null,
+        submission.status ?? "pending",
+      ]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Update oracle submission status.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {number} submissionId
+   * @param {string} status
+   * @returns {Promise<void>}
+   */
+  async updateOracleSubmissionStatus(submissionId, status) {
+    await pool.query(
+      `UPDATE oracle_submissions SET status = $1 WHERE id = $2`,
+      [status, submissionId]
+    );
+  },
+
+  /**
+   * Get the most recent oracle submission for a market.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {string} marketId
+   * @returns {Promise<object|null>}
+   */
+  async getLatestOracleSubmission(marketId) {
+    const { rows } = await pool.query(
+      `SELECT * FROM oracle_submissions 
+       WHERE market_id = $1 
+       ORDER BY ledger DESC, id DESC 
+       LIMIT 1`,
+      [marketId]
+    );
+    return rows[0] ?? null;
+  },
+
+  /**
+   * Insert an oracle dispute record.
+   * Uses pool.query — safe to call outside of init().
+   *
+   * @param {object} dispute
+   * @param {number} dispute.submission_id - Submission being disputed
+   * @param {string} dispute.market_id - Market identifier
+   * @param {string} dispute.disputer - Disputer address
+   * @param {string} [dispute.reason] - Dispute reason
+   * @param {number} dispute.ledger - Ledger number
+   * @param {string} [dispute.tx_hash] - Transaction hash
+   * @returns {Promise<number>} The inserted dispute ID
+   */
+  async insertOracleDispute(dispute) {
+    const { rows } = await pool.query(
+      `INSERT INTO oracle_disputes (submission_id, market_id, disputer, reason, ledger, tx_hash, timestamp)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
+       RETURNING id`,
+      [
+        dispute.submission_id,
+        dispute.market_id,
+        dispute.disputer,
+        dispute.reason ?? null,
+        dispute.ledger,
+        dispute.tx_hash ?? null,
+      ]
+    );
+    return rows[0].id;
+  },
+
+  /**
+   * Execute a raw query (for testing or advanced use).
+   * @param {string} text
+   * @param {Array} [params]
+   * @returns {Promise<object>}
+   */
+  async query(text, params) {
+    return pool.query(text, params);
+  },
 };
+
 
