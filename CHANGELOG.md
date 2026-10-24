@@ -1018,6 +1018,8 @@ Issue [#118](../../issues/118) — Contract admin key management
 
 ### Documentation
 
+- Auto-update CHANGELOG.md [skip ci] ([`1bdab8d`](../../commit/1bdab8d66a9de33c0b1a37b60d2cbdc050c43647))
+
 - Auto-update CHANGELOG.md [skip ci] ([`31bf74c`](../../commit/31bf74c43d63faff4361969f1a10c79efee17144))
 
 - Auto-update CHANGELOG.md [skip ci] ([`fb067d1`](../../commit/fb067d1ed5dd07be60f8832fb7155c3d65feaf5c))
@@ -1985,6 +1987,8 @@ Closes [#3](../../issues/3) — Parse ScVal Types to Native JavaScript Types
 
 
 ### Performance
+
+- Configure connection pool sizing, idle timeouts, and connection recycling ([#989](../../issues/989)) ([`0a5a368`](../../commit/0a5a36859d6446ff8abc9de0dcfe839144096173))
 
 - Eliminate polling latency with push-based market streaming ([`98e9a8e`](../../commit/98e9a8e3f5a7f18333f445c12b1e8bca01301281))
 
