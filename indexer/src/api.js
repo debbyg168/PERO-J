@@ -147,6 +147,7 @@ export function createApp() {
         lag_seconds: lagSeconds,
         last_ledger: health.lastLedger,
         last_indexed_at: health.lastIndexedAt ? new Date(health.lastIndexedAt).toISOString() : null,
+        pool: typeof db.getPoolMetrics === "function" ? db.getPoolMetrics() : undefined,
       };
 
       res.status(degraded ? 503 : 200).json(body);
