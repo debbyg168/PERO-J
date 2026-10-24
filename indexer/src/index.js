@@ -3,10 +3,8 @@ import { SorobanRpc, StrKey } from "@stellar/stellar-sdk";
 import { startApi } from "./api.js";
 import { db } from "./db.js";
 import { registerFixtures } from "./registerFixtures.js";
-import { decode, evictContractMeta } from "./decoder.js";
 import { reloadSacMap } from "./sac.js";
 import { validateNetwork } from "./validateNetwork.js";
-import { submitEvent } from "./contract.js";
 import { resolvePollMs } from "./resolvePollMs.js";
 import { handleOracleSubmission } from "./handlers/oracle_submission.js";
 import { handleOracleDispute } from "./handlers/oracle_dispute.js";
@@ -20,7 +18,6 @@ const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.
 const START_LEDGER = Number(process.env.START_LEDGER || 0);
 const POLL_MS = resolvePollMs();
 const RPC_ERROR_THRESHOLD = 3;
-const EXPLORER_CONTRACT_ID = process.env.SOROBAN_EXPLORER_CONTRACT_ID;
 
 let rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
 
@@ -121,14 +118,16 @@ export async function indexLedger(ledger, rpcClient = rpc) {
       if (targetContractId) {
         evictContractMeta(targetContractId);
       }
-      continue;
     }
 
-    const decoded = await decode(ev);
-    decoded.event_addresses = extractAddresses([decoded.topic, decoded.data]);
-    const onchain_seq = await submitEvent(decoded);
-    if (onchain_seq !== null) {
-      decoded.onchain_seq = onchain_seq;
+    const nextCursor = res.cursor;
+    if (
+      reachedEndLedger ||
+      res.events.length === 0 ||
+      !nextCursor ||
+      nextCursor === paginationCursor
+    ) {
+      break;
     }
     await db.upsertEvent(decoded);
     // Fire-and-forget after commit: Redis failures never block indexing.
@@ -194,24 +193,7 @@ export function isExplorerUpdateEvent(ev) {
   }
 }
 
-/**
- * Extract the strkey contract id (C…) of the contract whose ABI was updated
- * from an explorer `update` event, or null if it cannot be recovered.
- *
- * @param {object} ev - Raw event object from SorobanRpc.getEvents()
- * @returns {string|null}
- */
-export function updateEventContractId(ev) {
-  const topic = ev.topic?.[1];
-  if (!topic) {
-    return null;
-  }
-  try {
-    const bytes = topic.bytes();
-    return StrKey.encodeContract(bytes);
-  } catch {
-    return null;
-  }
+  return onlyLedger ?? latestLedger;
 }
 
 let shuttingDown = false;

@@ -285,8 +285,7 @@ export const db = {
 
   /**
    * Persist a decoded event to the database.
-   * Uses ON CONFLICT DO NOTHING so duplicate events (e.g. from an indexer
-   * restart) are silently skipped.
+  * Skips duplicate event records (e.g. when a backfill resumes after a crash).
    * Uses pool.query — safe to call outside of init().
    *
    * @param {DecodedEvent} ev
